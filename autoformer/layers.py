@@ -42,3 +42,4 @@ if __name__ == "__main__":
     
     model = Model(inputs=input_layer, outputs=output_layer)
     model.compile(optimizer='adam', loss='mse')
+    model.summary()
