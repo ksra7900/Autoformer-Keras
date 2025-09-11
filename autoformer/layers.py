@@ -61,6 +61,28 @@ class AutoCorrelation(Layer):
         
         super(AutoCorrelation, self).build(input_shape)
         
+    def roll_function(self, v, tau):
+        batch_size, n_heads, seq_len, d_head= tf.shape(v)[0], tf.shape(v)[1], tf.shape(v)[2], tf.shape(v)[3]
+        
+        v_flat= tf.reshape(v, (batch_size * n_heads, seq_len, d_head))
+        tau_flat= tf.reshape(tau, (batch_size * n_heads, seq_len))
+        
+        def roll_single_sequence(args):
+            v_vec, tau_vec= args
+            
+            rolled_sequence= []
+            for t in range(seq_len):
+                shift= tau_vec[t]
+                rolled_v= tf.roll(v_vec, shift=shift, axis=0)
+                rolled_sequence.append(rolled_v[t])
+                
+            return tf.stack(rolled_sequence, axis=0)
+        
+        output_flat= tf.vectorized_map(roll_single_sequence, (v_flat, tau_flat))
+        output= tf.reshape(output_flat, (batch_size, n_heads, seq_len, d_head))
+        
+        return output
+        
     def call(self, queries, keys, values):
         batch_size = tf.shape(queries)[0]
         len_q = tf.shape(queries)[1]
@@ -98,6 +120,25 @@ class AutoCorrelation(Layer):
 
         # Apply softmax to top_k_vals to get weights
         weights = tf.nn.softmax(top_k_vals, axis= -1)
+        
+        # Delay Aggregation
+        output= tf.zeros_like(V)
+        
+        for i in range(k):
+            tau= top_k_indices[..., i]
+            w= weights[..., i]
+            
+            rolled_v= self.roll_function(V, tau)
+            
+            w= tf.expand_dims(w, axis=-1)
+            output += w * rolled_v
+            
+        output= tf.transpose(output, perm=[0, 2, 1, 3])
+        output= tf.reshape(output, (batch_size, len_q, self.d_model))
+        
+        # create output
+        output= tf.matmul(output, self.wo)
+        return output
 
 if __name__ == "__main__":
     input_layer = Input(shape=(100, 5))  # (seq_len=100, features=5)
