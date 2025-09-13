@@ -1,7 +1,8 @@
-from keras.models import Model
 import tensorflow as tf
+from keras.models import Model
 from keras.layers import Layer, AveragePooling1D, Input, Dense
 
+# intialize Series Decomposition
 class SeriesDecomposition(Layer):
     def __init__(self, kernel_size= 25, padding= 'same', **kwargs):
         super(SeriesDecomposition, self).__init__(**kwargs)
@@ -30,13 +31,14 @@ class SeriesDecomposition(Layer):
             })
         return config
 
+# intialize AutoCorrelation
 class AutoCorrelation(Layer):
     def __init__(self, d_model, n_heads, c=1, **kwargs):
         super(AutoCorrelation, self).__init__(**kwargs)
         self.d_model = d_model
         self.n_heads = n_heads
         self.c = c
-        assert d_model & n_heads == 0, "d_model must be divisible by n_heads"
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_head = d_model // n_heads
         
     def build(self, input_shape):
@@ -99,17 +101,17 @@ class AutoCorrelation(Layer):
         V = tf.reshape(V, (batch_size, len_k, self.n_heads, self.d_head))
         
         # Transpose to (batch_size, n_heads, seq_len, d_head)
-        Q = tf.transpose(Q, perm=[0, 2, 1, 3])
-        K = tf.transpose(K, perm=[0, 2, 1, 3])
-        V = tf.transpose(V, perm=[0, 2, 1, 3])
+        Q = tf.transpose(Q, perm=[0, 2, 3, 1])
+        K = tf.transpose(K, perm=[0, 2, 3, 1])
+        V = tf.transpose(V, perm=[0, 2, 3, 1])
         
         # compute FFT 
-        Q_fft = tf.signal.fft(tf.cast(Q, tf.complex64))
-        K_fft = tf.signal.fft(tf.cast(K, tf.complex64))
+        Q_fft = tf.signal.rfft(tf.cast(Q, tf.complex64))
+        K_fft = tf.signal.rfft(tf.cast(K, tf.complex64))
         
         # Compute cross-correlation via inverse FFT of element-wise product
         S = Q_fft * tf.math.conj(K_fft)
-        corr = tf.signal.ifft(S)
+        corr = tf.signal.irfft(S)
         corr = tf.math.real(corr)
         
         # find top K delay
