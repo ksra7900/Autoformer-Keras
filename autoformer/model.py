@@ -1,4 +1,3 @@
-import tensorflow as tf
 from keras import layers
 from keras.models import Model
 from blocks import encoder, decoder
@@ -14,13 +13,11 @@ class Autoformer(layers.Layer):
                  activation='relu',
                  kernel_size= 25,
                  padding= 'same',
-                 dropout_rate= 0.1,
                  c=1,
                  **kwargs):
         super(Autoformer, self).__init__(**kwargs)
         self.kernel_size= kernel_size
         self.padding= padding
-        self.dropout_rate= dropout_rate
         self.c= c
         self.d_model= d_model
         self.d_out= d_out
@@ -47,6 +44,8 @@ class Autoformer(layers.Layer):
                                         )for _ in range(self.num_decoder)
                                 ]
         
+        self.output_dence= layers.Dense(1, activation='linear')
+        
     def build(self, input_shape):
         super().build(input_shape)
         # build encoder layer
@@ -69,7 +68,7 @@ class Autoformer(layers.Layer):
             decoder_output= decoder_layer((decoder_output, x))
             
         # output layer
-        output= layers.Dense(1, activation='linear')(x)
+        output= self.output_dence(decoder_output)
         
         return output
             
@@ -85,7 +84,6 @@ class Autoformer(layers.Layer):
             'activation' : self.activation,
             'kernel_size' : self.kernel_size,
             'padding' : self.padding,
-            'dropout_rate' : self.dropout_rate,
             'c' : self.c
             })
         
@@ -93,7 +91,7 @@ class Autoformer(layers.Layer):
         return (input_shape[0], input_shape[1], 1)
         
 if __name__ == '__main__':
-    input_layer= layers.Input(shape=(100, 5))
+    '''input_layer= layers.Input(shape=(100, 5))
     x= Autoformer(d_out= 8,
                   d_model= 4,
                   n_heads= 16,
@@ -104,4 +102,6 @@ if __name__ == '__main__':
 
     model= Model(inputs= input_layer, outputs= x)      
     model.compile(optimizer='adam', loss='mse')
-    model.summary()      
+    model.summary()      '''
+    
+    

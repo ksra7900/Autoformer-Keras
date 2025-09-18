@@ -24,17 +24,14 @@ class encoder(layers.Layer):
         self.n_heads= n_heads
         self.activation= activation
         self.conv_filter= conv_filter
-        # SeriesDecomposition layer
+        # layers
+        self.input_proj = layers.Dense(self.d_model)
+        self.residual_proj = layers.Dense(self.d_model)
+        # Series Decomposition
         self.moving_avg= SeriesDecomposition(kernel_size=self.kernel_size,
                                              padding=self.padding)
         
         # fully connect layer
-        self.ff_layer= None
-        
-    
-    
-    def build(self, input_shape):
-        super().build(input_shape)
         self.ff_layer= Sequential(
             [
                 layers.Conv1D(filters= self.conv_filter,
@@ -49,13 +46,13 @@ class encoder(layers.Layer):
                 layers.Dropout(self.dropout_rate)
             ]
         )
-        self.ff_layer.build(input_shape)
         
     def call(self, inputs):
-        x= layers.Dense(self.d_model)(inputs)
+        proj_input= self.residual_proj(inputs)
+        x= self.input_proj(proj_input)
         x= AutoCorrelationWrapper(d_model=self.d_model, 
                                   n_heads=self.n_heads)([x,x,x])
-        x= x + inputs
+        x= x + proj_input
         x,_= self.moving_avg(x)
             
         y= self.ff_layer(x)
@@ -131,7 +128,6 @@ class decoder(layers.Layer):
                 layers.Dropout(self.dropout_rate)
             ]
         )
-        self.ff_layer.build(input_shape)
         
     def call(self, inputs:tuple[tf.Tensor, tf.Tensor]) -> tuple[tf.Tensor, tf.Tensor]:
         x, cross= inputs

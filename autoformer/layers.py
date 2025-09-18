@@ -31,15 +31,14 @@ class SeriesDecomposition(Layer):
             'padding' : self.padding
             })
         return config
-
+    
 # intialize AutoCorrelation
 class AutoCorrelation(Layer):
-    def __init__(self, d_model, n_heads, dropout_rate= 0.1, c=1, **kwargs):
+    def __init__(self, d_model, n_heads, c=1, **kwargs):
         super(AutoCorrelation, self).__init__(**kwargs)
         self.d_model = d_model
         self.n_heads = n_heads
         self.c = c
-        self.dropout_rate= dropout_rate
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_head = d_model // n_heads
         
@@ -64,7 +63,7 @@ class AutoCorrelation(Layer):
                                  trainable= True,
                                  name= 'wo')
         
-        self.dropout = Dropout(self.dropout_rate)
+        
         super(AutoCorrelation, self).build(input_shape)
         
     def _time_delay_agg(self, values, corr):
@@ -74,8 +73,14 @@ class AutoCorrelation(Layer):
         length = tf.shape(values)[3]
         
         # Find top k delays
-        k= int(self.c * math.log(length))
-        mean_corr= tf.reduce_mean(corr, axis=(1, 2))
+        #k= int(self.c * math.log(length))
+        kـfloat= self.c * tf.math.log(tf.cast(length, tf.float32))
+        k= tf.cast(kـfloat, tf.int32)
+        k= tf.maximum(k, 1)
+        k = tf.minimum(k, length)
+        
+        mean_corr= tf.reduce_mean(corr, axis=[1, 2])
+        
         top_k_vals, top_k_indices= tf.math.top_k(mean_corr, k=k)
         
         # Apply softmax to get weights
@@ -83,19 +88,29 @@ class AutoCorrelation(Layer):
         
         # time delay aggregation
         delays_agg= tf.zeros_like(values)
-        for i in range(k):
-            delay_val= top_k_indices[..., i]
             
-            patterns= []
-            for b in range(batch_size):
-                pattern= tf.roll(values[b], shift=[-delay_val[b]], axis=[-1])
-                patterns.append(pattern)
-                
-            pattern = tf.stack(patterns, axis=0)
-            
-            # add suitable weight
-            weight_expanded = tf.reshape(weights[:, i], [batch_size, 1, 1, 1])
-            delays_agg += pattern * tf.cast(weight_expanded, values.dtype)
+        def process_single_delay(i_and):
+            i = i_and[0]  # scalar index, not used directly
+            delay_idx = i_and[1]  # shape [batch]
+            weight = i_and[2]     # shape [batch]
+            # For each batch b, roll values[b] by -delay_idx[b] along axis=1 (seq axis inside values[b])
+            def roll_for_batch(b):
+                # values[b] shape [n_heads, seq_len, d_head]
+                shift = -delay_idx[b]
+                return tf.roll(values[b], shift=shift, axis=1)
+            rolled = tf.map_fn(roll_for_batch, tf.range(batch_size), dtype=values.dtype)
+            # rolled shape: [batch, n_heads, seq_len, d_head]
+            weight_exp = tf.reshape(weight, [batch_size, 1, 1, 1])
+            return rolled * tf.cast(weight_exp, values.dtype)
+        
+        elems= (tf.range(k),
+                tf.transpose(top_k_indices, perm=[1, 0]),
+                tf.transpose(weights, perm=[1, 0])
+            )
+        
+        results = tf.map_fn(lambda x: process_single_delay(x),
+                            elems, dtype=values.dtype)
+        delays_agg = tf.reduce_sum(results, axis=0)
             
         return delays_agg
         
@@ -117,9 +132,9 @@ class AutoCorrelation(Layer):
         V = tf.reshape(V, (batch_size, len_k, self.n_heads, self.d_head))
         
         # Transpose to (batch_size, n_heads, seq_len, d_head)
-        Q = tf.transpose(Q, perm=[0, 2, 3, 1])
-        K = tf.transpose(K, perm=[0, 2, 3, 1])
-        V = tf.transpose(V, perm=[0, 2, 3, 1])
+        Q = tf.transpose(Q, perm=[0, 2, 1, 3])
+        K = tf.transpose(K, perm=[0, 2, 1, 3])
+        V = tf.transpose(V, perm=[0, 2, 1, 3])
         
         # compute FFT 
         Q_fft = tf.signal.rfft(Q)
@@ -129,6 +144,8 @@ class AutoCorrelation(Layer):
         S = Q_fft * tf.math.conj(K_fft)
         corr = tf.signal.irfft(S)
         corr = tf.math.real(corr)
+        
+        corr = tf.einsum('b h i d, b h j d -> b h i j', Q, K)
         
         # delay aggregation
         agg_output= self._time_delay_agg(V, corr)
@@ -141,7 +158,6 @@ class AutoCorrelation(Layer):
         
         # Final linear projection
         output = tf.matmul(agg_output, self.wo)
-        output = self.dropout(output)
         
         return output
     
@@ -150,12 +166,11 @@ class AutoCorrelation(Layer):
         return (query_shape[0], query_shape[1], self.d_model)
 
 class AutoCorrelationWrapper(Layer):
-    def __init__(self, d_model, n_heads, dropout_rate=0.1, c=1, **kwargs):
+    def __init__(self, d_model, n_heads, c=1, **kwargs):
         super(AutoCorrelationWrapper, self).__init__(**kwargs)
         self.auto_correlation = AutoCorrelation(
             d_model=d_model, 
             n_heads=n_heads, 
-            dropout_rate=dropout_rate, 
             c=c
         )
         
@@ -169,7 +184,7 @@ class AutoCorrelationWrapper(Layer):
     
 if __name__ == "__main__":
     # input
-    input_layer = Input(shape=(100, 5))
+    '''input_layer = Input(shape=(100, 5))
     d_model = 8
     n_heads = 4
     
@@ -187,4 +202,12 @@ if __name__ == "__main__":
     
     model = Model(inputs=input_layer, outputs=output_layer)
     model.compile(optimizer='adam', loss='mse')
-    model.summary()
+    model.summary()'''
+    
+    layer = AutoCorrelation(d_model=16, n_heads=4)
+    q = tf.random.normal((2, 24, 16))
+    k = tf.random.normal((2, 24, 16))
+    v = tf.random.normal((2, 24, 16))
+    
+    out = layer([q, k, v])
+    print(out.shape)
