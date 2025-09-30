@@ -1,5 +1,4 @@
 from keras import layers
-from keras.models import Model
 from blocks import encoder, decoder
 
 class Autoformer(layers.Layer):
@@ -89,19 +88,3 @@ class Autoformer(layers.Layer):
         
     def compute_output_shape(self, input_shape):
         return (input_shape[0], input_shape[1], 1)
-        
-if __name__ == '__main__':
-    '''input_layer= layers.Input(shape=(100, 5))
-    x= Autoformer(d_out= 8,
-                  d_model= 4,
-                  n_heads= 16,
-                  conv_filter= 16,
-                  num_decoder=2,
-                  num_encoder=2)(input_layer)
-
-
-    model= Model(inputs= input_layer, outputs= x)      
-    model.compile(optimizer='adam', loss='mse')
-    model.summary()      '''
-    
-    

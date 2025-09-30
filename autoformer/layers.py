@@ -1,7 +1,6 @@
 import math
 import tensorflow as tf
-from keras.models import Model
-from keras.layers import Layer, AveragePooling1D, Input, Dense, Dropout
+from keras.layers import Layer, AveragePooling1D
 
 # intialize Series Decomposition
 class SeriesDecomposition(Layer):
@@ -41,90 +40,52 @@ class AutoCorrelation(Layer):
         self.c = c
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_head = d_model // n_heads
+        self.max_k= None
         
     def build(self, input_shape):
         # Define weight matrices Q,V,K for forecasting
-        query_shape = input_shape[0] if isinstance(input_shape, list) else input_shape
-        self.wq= self.add_weight(shape=(query_shape[-1], self.d_model),
+        q_shape = input_shape[0] if isinstance(input_shape, list) else input_shape
+        in_dim= q_shape[-1]
+        self.wq= self.add_weight(shape=(in_dim, self.d_model),
                                  initializer='glorot_uniform',
                                  trainable= True,
                                  name= 'wq')
-        self.wk= self.add_weight(shape=(query_shape[-1], self.d_model),
+        self.wk= self.add_weight(shape=(in_dim, self.d_model),
                                  initializer='glorot_uniform',
                                  trainable= True,
                                  name= 'wk')
-        self.wv= self.add_weight(shape=(query_shape[-1], self.d_model),
+        self.wv= self.add_weight(shape=(in_dim, self.d_model),
                                  initializer='glorot_uniform',
                                  trainable= True,
                                  name= 'wv')
         # Outout forecast matrices
-        self.wo= self.add_weight(shape=(self.d_model, self.d_model),
+        self.wo= self.add_weight(shape=(in_dim, self.d_model),
                                  initializer='glorot_uniform',
                                  trainable= True,
                                  name= 'wo')
         
         
-        super(AutoCorrelation, self).build(input_shape)
-        
-    def _time_delay_agg(self, values, corr):
-        batch_size = tf.shape(values)[0]
-        n_heads = tf.shape(values)[1]
-        d_head = tf.shape(values)[2]
-        length = tf.shape(values)[3]
-        
-        # Find top k delays
-        #k= int(self.c * math.log(length))
-        kـfloat= self.c * tf.math.log(tf.cast(length, tf.float32))
-        k= tf.cast(kـfloat, tf.int32)
-        k= tf.maximum(k, 1)
-        k = tf.minimum(k, length)
-        
-        mean_corr= tf.reduce_mean(corr, axis=[1, 2])
-        
-        top_k_vals, top_k_indices= tf.math.top_k(mean_corr, k=k)
-        
-        # Apply softmax to get weights
-        weights= tf.nn.softmax(top_k_vals, axis=-1)
-        
-        # time delay aggregation
-        delays_agg= tf.zeros_like(values)
+        seq_len= q_shape[1]
+        if isinstance(seq_len, int) and seq_len is not None:
+            k= max(1, int(self.c * math.log(max(2, seq_len))))
+            self.max_k= k
             
-        def process_single_delay(i_and):
-            i = i_and[0]  # scalar index, not used directly
-            delay_idx = i_and[1]  # shape [batch]
-            weight = i_and[2]     # shape [batch]
-            # For each batch b, roll values[b] by -delay_idx[b] along axis=1 (seq axis inside values[b])
-            def roll_for_batch(b):
-                # values[b] shape [n_heads, seq_len, d_head]
-                shift = -delay_idx[b]
-                return tf.roll(values[b], shift=shift, axis=1)
-            rolled = tf.map_fn(roll_for_batch, tf.range(batch_size), dtype=values.dtype)
-            # rolled shape: [batch, n_heads, seq_len, d_head]
-            weight_exp = tf.reshape(weight, [batch_size, 1, 1, 1])
-            return rolled * tf.cast(weight_exp, values.dtype)
+        else:
+            self.max_k= 1
         
-        elems= (tf.range(k),
-                tf.transpose(top_k_indices, perm=[1, 0]),
-                tf.transpose(weights, perm=[1, 0])
-            )
-        
-        results = tf.map_fn(lambda x: process_single_delay(x),
-                            elems, dtype=values.dtype)
-        delays_agg = tf.reduce_sum(results, axis=0)
-            
-        return delays_agg
-        
+        super().build(input_shape)
         
     def call(self, inputs):
+        
         queries, keys, values = inputs
         batch_size = tf.shape(queries)[0]
         len_q = tf.shape(queries)[1]
         len_k = tf.shape(keys)[1]
         
         # Linear forecast and split into heads
-        Q = tf.matmul(queries, self.wq)
-        K = tf.matmul(keys, self.wk)
-        V = tf.matmul(values, self.wv)
+        Q = tf.tensordot(queries, self.wq, axes=1)
+        K = tf.tensordot(keys, self.wk, axes=1)
+        V = tf.tensordot(values, self.wv, axes=1)
         
         # Reshape to (batch_size, seq_len, n_heads, d_head)
         Q = tf.reshape(Q, (batch_size, len_q, self.n_heads, self.d_head))
@@ -136,28 +97,44 @@ class AutoCorrelation(Layer):
         K = tf.transpose(K, perm=[0, 2, 1, 3])
         V = tf.transpose(V, perm=[0, 2, 1, 3])
         
-        # compute FFT 
-        Q_fft = tf.signal.rfft(Q)
-        K_fft = tf.signal.rfft(K)
-        
-        # Compute cross-correlation via inverse FFT of element-wise product
-        S = Q_fft * tf.math.conj(K_fft)
-        corr = tf.signal.irfft(S)
-        corr = tf.math.real(corr)
-        
+        # compute correlation
         corr = tf.einsum('b h i d, b h j d -> b h i j', Q, K)
+        mean_corr= tf.reduce_mean(corr, axis=[1, 2])
         
-        # delay aggregation
-        agg_output= self._time_delay_agg(V, corr)
+        # choose top-k
+        k = self.max_k if self.max_k is not None else 1
+        
+        # argsort then take first k indices
+        sorted_idx = tf.argsort(mean_corr, direction="DESCENDING")
+        topk_idx= sorted_idx[:, :k]
+        topk_vals= tf.gather(mean_corr, topk_idx, batch_dims=1)
+        weights= tf.nn.softmax(topk_vals ,axis=-1)
+        
+        # time delay aggregation
+        delays_agg= tf.zeros_like(V)
+        
+        # for each of k delays do per-batch roll and weighted sum
+        for i in range(k):
+            delays= topk_idx[:, i]
+            w= weights[:, i]
+            
+            # roll V per batch according to delays
+            def roll_one(b):
+                v_b= V[b]
+                shift= -tf.cast(delays[b], tf.int32)    
+                return tf.roll(v_b, shift=shift, axis=1)
+            rolled= tf.map_fn(roll_one, tf.range(batch_size), dtype=V.dtype)
+            w_exp= tf.reshape(w, (batch_size, 1, 1, 1))
+            delays_agg += rolled * tf.cast(w_exp, V.dtype)
         
         # Transpose delay
-        agg_output= tf.transpose(agg_output, perm=[0, 3, 1, 2])
+        agg_output= tf.transpose(delays_agg, perm=[0, 2, 1, 3])
         
         # Reshape to (batch_size, seq_len, d_model) 
         agg_output = tf.reshape(agg_output, (batch_size, len_q, self.d_model))
         
         # Final linear projection
-        output = tf.matmul(agg_output, self.wo)
+        output = tf.tensordot(agg_output, self.wo, axes=[[2],[0]])
         
         return output
     
@@ -181,33 +158,3 @@ class AutoCorrelationWrapper(Layer):
     
     def compute_output_shape(self, input_shape):
         return self.auto_correlation.compute_output_shape(input_shape)
-    
-if __name__ == "__main__":
-    # input
-    '''input_layer = Input(shape=(100, 5))
-    d_model = 8
-    n_heads = 4
-    
-    # creat Q, V, K
-    projected = Dense(d_model)(input_layer)
-    
-    # AutoCorrelation (self-attention)
-    ac_output = AutoCorrelationWrapper(d_model=d_model, n_heads=n_heads)(
-        [projected, projected, projected]  
-    )
-    
-    seasonal, trend = SeriesDecomposition(kernel_size=25)(ac_output)
-    
-    output_layer = seasonal + trend  
-    
-    model = Model(inputs=input_layer, outputs=output_layer)
-    model.compile(optimizer='adam', loss='mse')
-    model.summary()'''
-    
-    layer = AutoCorrelation(d_model=16, n_heads=4)
-    q = tf.random.normal((2, 24, 16))
-    k = tf.random.normal((2, 24, 16))
-    v = tf.random.normal((2, 24, 16))
-    
-    out = layer([q, k, v])
-    print(out.shape)

@@ -1,5 +1,5 @@
 import tensorflow as tf
-from keras.models import Model, Sequential
+from keras.models import Sequential
 from keras import layers
 from layers import AutoCorrelationWrapper, SeriesDecomposition
 
@@ -47,11 +47,15 @@ class encoder(layers.Layer):
             ]
         )
         
+        # Autocorrelation
+        self.AutoCorr= AutoCorrelationWrapper(d_model=self.d_model, 
+                                              n_heads=self.n_heads)
+        
+        
     def call(self, inputs):
         proj_input= self.residual_proj(inputs)
         x= self.input_proj(proj_input)
-        x= AutoCorrelationWrapper(d_model=self.d_model, 
-                                  n_heads=self.n_heads)([x,x,x])
+        x= self.AutoCorr([x,x,x])
         x= x + proj_input
         x,_= self.moving_avg(x)
             
@@ -128,22 +132,20 @@ class decoder(layers.Layer):
                 layers.Dropout(self.dropout_rate)
             ]
         )
+        self.AutoCorr= AutoCorrelationWrapper(d_model=self.d_model, 
+                                              n_heads=self.n_heads)
         
     def call(self, inputs:tuple[tf.Tensor, tf.Tensor]) -> tuple[tf.Tensor, tf.Tensor]:
         x, cross= inputs
         
         # self attention
-        x_attn= AutoCorrelationWrapper(
-                                    d_model=self.d_model, 
-                                    n_heads=self.n_heads)([x,x,x])
+        x_attn= self.AutoCorr([x,x,x])
         
         x= x + x_attn
         x_sesonal, x_trend1= self.moving_avg(x)
         
         # crosss atention
-        x_cross= AutoCorrelationWrapper(
-                                    d_model=self.d_model, 
-                                    n_heads=self.n_heads)([cross,cross,x])
+        x_cross= self.AutoCorr([cross,cross,x])
     
         x= x_sesonal + x_cross
         x_sesonal, x_trend2= self.moving_avg(x)
@@ -175,23 +177,3 @@ class decoder(layers.Layer):
     
     def compute_output_shape(self, input_shape):
         return input_shape
-    
-if __name__ == '__main__':
-    
-    input_layer = layers.Input(shape=(100, 5))
-    d_model = 8
-    n_heads = 4
-    x = encoder(d_model=d_model,
-                n_heads=n_heads,
-                conv_filter=16)(input_layer)
-    
-    x = decoder(d_model=d_model,
-                n_heads=n_heads,
-                conv_filter=16,
-                d_out=16)(x)
-    x= layers.Dense(1, activation='linear')(x)
-    model = Model(inputs=input_layer, outputs=x)
-    model.compile(optimizer='adam', loss='mse')
-    model.summary()
-    
-
