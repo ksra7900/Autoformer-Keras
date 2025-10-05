@@ -1,7 +1,7 @@
 import tensorflow as tf
 from keras.models import Sequential
 from keras import layers
-from layers import AutoCorrelationWrapper, SeriesDecomposition
+from autoformer.layers import AutoCorrelationWrapper, SeriesDecomposition
 
 # Encoder block
 class encoder(layers.Layer):

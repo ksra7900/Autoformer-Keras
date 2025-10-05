@@ -1,5 +1,5 @@
 from keras import layers
-from blocks import encoder, decoder
+from autoformer.blocks import encoder, decoder
 
 class Autoformer(layers.Layer):
     def __init__(self,
