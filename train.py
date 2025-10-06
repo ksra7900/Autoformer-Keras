@@ -4,7 +4,8 @@ import pandas as pd
 import tensorflow as tf
 from keras import layers
 from keras.models import Model
-from keras.callbacks import EarlyStopping               
+from keras.callbacks import EarlyStopping
+from keras.optimizers import Adam               
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler,  PowerTransformer
 import matplotlib.pyplot as plt
@@ -43,7 +44,7 @@ scaler_y = MinMaxScaler(feature_range=(0, 1))
 X_scaled = scaler_x.fit_transform(X)
 y_scaled = scaler_y.fit_transform(y)
 
-window_size = 1008  # last 24 hour
+window_size = 144  # last 24 hour
 horizon = 144  # forecast next hour
 
 X_windows, y_windows = create_time_windows(X_scaled, y_scaled, window_size, horizon)
@@ -60,33 +61,154 @@ x_valid, x_test, y_valid, y_test= train_test_split(
 input_shape = (window_size, X.shape[1])
 inputs= layers.Input(shape=input_shape)
 x= Autoformer(d_out= 1,
-            d_model= 16,
-            n_heads= 4,
-            conv_filter= 16,
+            d_model= 32,
+            n_heads= 2,
+            conv_filter= 32,
             num_decoder=1,
             num_encoder=1)(inputs)
 
-x= layers.Dense(horizon)(x)
+'''x= layers.Dense(horizon)(x)
 x= x[:, -1, :]
-outputs= layers.Reshape((horizon, 1))(x)
+outputs= layers.Reshape((horizon, 1))(x)'''
 
-model= Model(inputs= inputs, outputs= outputs)      
-model.compile(optimizer='adam', 
-              loss=['mse'],
-              metrics= ['RootMeanSquaredError'])
+model= Model(inputs= inputs, outputs= x)      
+model.compile(optimizer=Adam(learning_rate= 0.001, clipnorm= 0.1), 
+              loss='mse',
+              metrics= ['RootMeanSquaredError'])    
 model.summary()  
 
 callback= EarlyStopping(monitor='val_loss',
-                        patience=20,
+                        patience=40,
                         restore_best_weights= True)
 history = model.fit(
     x_train,
     y_train,
     validation_data=(x_valid, y_valid),
     shuffle=False,
-    epochs=50,
-    batch_size=64,
+    epochs=1000,
+    batch_size=32,
     callbacks= callback
 )
 
 score = model.evaluate(x_test, y_test)
+
+y_pred= model.predict(x_test)
+
+y_pred_rescaled = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).reshape(y_pred.shape)
+y_true_rescaled = scaler_y.inverse_transform(y_test.reshape(-1, 1)).reshape(y_test.shape)
+
+plt.figure(figsize=(12,6))
+plt.plot(y_true_rescaled[0], label="Actual", marker='o')
+plt.plot(y_pred_rescaled[0], label="Predicted", marker='x')
+plt.title("Test Sequence Prediction vs Actual")
+plt.xlabel("Time step")
+plt.ylabel("Target value")
+plt.legend()
+plt.show()
+
+train_loss = history.history['loss']
+val_loss = history.history['val_loss']
+
+plt.figure(figsize=(10,6))
+plt.plot(train_loss, label="Training Loss")
+plt.plot(val_loss, label="Validation Loss")
+plt.title("Training vs Validation Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
